@@ -1,0 +1,662 @@
+package com.my.newproject7;
+
+import android.content.Context;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.net.Uri;
+import android.os.Bundle;
+import android.provider.Settings;
+import android.util.Log;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AlertDialog;
+import androidx.appcompat.app.AppCompatActivity;
+
+import com.google.firebase.database.DataSnapshot;
+import com.google.firebase.database.DatabaseError;
+import com.google.firebase.database.DatabaseReference;
+import com.google.firebase.database.FirebaseDatabase;
+import com.google.firebase.database.ValueEventListener;
+
+import android.content.pm.PackageManager;
+import android.content.pm.PackageInfo;
+
+import java.util.Calendar;
+
+public class MainActivity extends AppCompatActivity {
+
+    private EditText usernameEditText;
+    private Button loginButton;
+    private TextView userIdTextView;
+    private DatabaseReference dbRef;
+    private String androidId;
+    private SharedPreferences sharedPreferences;
+    private ValueEventListener banListener;
+
+    // Define the current version code and name
+    private static int CURRENT_VERSION_CODE;
+    private static String CURRENT_VERSION_NAME;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.main);
+
+        // Initialize views
+        usernameEditText = findViewById(R.id.usernameEditText);
+        loginButton = findViewById(R.id.loginButton);
+        userIdTextView = findViewById(R.id.userIdTextView);
+
+        // Initialize Firebase reference and Android ID
+        dbRef = FirebaseDatabase.getInstance().getReference("banned_users");
+        androidId = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
+
+        // Initialize SharedPreferences
+        sharedPreferences = getSharedPreferences("AppPreferences", MODE_PRIVATE);
+
+        // Display User ID
+        userIdTextView.setText("User ID: " + androidId);
+
+        // Add real-time listener to check for bans
+        addBanListener();
+
+        // Get current version code and name
+        getCurrentVersionInfo();
+
+        // Check for updates when the activity starts
+        checkForUpdates();
+
+        // Add OnClickListener for the login button
+        loginButton.setOnClickListener(v -> {
+            String username = usernameEditText.getText().toString().trim();
+            if (username.isEmpty()) {
+                Toast.makeText(MainActivity.this, "Please enter a username", Toast.LENGTH_SHORT).show();
+            } else {
+                // Save login status and username
+                saveLoginStatus(username);
+                // Check for updates
+                checkForUpdates();
+            }
+        });
+
+        // Add OnClickListener to TextView for copying the User ID when clicked
+        userIdTextView.setOnClickListener(v -> copyToClipboard(androidId));
+        
+        // Save that the user has passed through MainActivity
+        markUserPassedThroughMainActivity();
+    }
+
+    private void addBanListener() {
+        // Listener to monitor changes in the ban status
+        banListener = dbRef.child(androidId).addValueEventListener(new ValueEventListener() {
+            @Override
+            public void onDataChange(@NonNull DataSnapshot dataSnapshot) {
+                if (dataSnapshot.exists()) {
+                    Long banEndTime = dataSnapshot.child("banEndTime").getValue(Long.class);
+
+                    if (banEndTime != null) {
+                        long currentTime = System.currentTimeMillis();
+                        if (banEndTime > currentTime) {
+                            Intent intent = new Intent(MainActivity.this, BannedActivity.class);
+                            startActivity(intent);
+                            finish();
+                        }
+                    } else {
+                        Toast.makeText(MainActivity.this, "Ban end time not set", Toast.LENGTH_SHORT).show();
+                    }
+                }
+            }
+
+            @Override
+            public void onCancelled(@NonNull DatabaseError databaseError) {
+                Toast.makeText(MainActivity.this, "Error monitoring ban status", Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    private void getCurrentVersionInfo() {
+        try {
+            PackageManager pm = getPackageManager();
+            PackageInfo pInfo = pm.getPackageInfo(getPackageName(), 0);
+            CURRENT_VERSION_CODE = pInfo.versionCode;
+            CURRENT_VERSION_NAME = pInfo.versionName;
+        } catch (PackageManager.NameNotFoundException e) {
+            e.printStackTrace();
+            Toast.makeText(this, "Error getting version info", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void saveLoginStatus(String username) {
+        // Save login status and username in SharedPreferences
+        SharedPreferences.Editor editor = sharedPreferences.edit();
+        editor.putBoolean("isLoggedIn", true);
+        editor.putString("username", username);
+        editor.apply(); // Use apply instead of commit
+
+        // Redirect to WelcomeActivity
+        Intent intent = new Intent(MainActivity.this, WelcomeActivity.class);
+        startActivity(intent);
+        finish();
+    }
+
+    private void checkForUpdates() {
+        DatabaseReference updateRef = FirebaseDatabase.getInstance().getReference("updates");
+
+        updateRef.addValueEventListener(new ValueEventListener() {
+            @Override
+            public void onDataChange(@NonNull DataSnapshot dataSnapshot) {
+                if (dataSnapshot.exists()) {
+                    Log.d("UpdateCheck", "DataSnapshot exists, checking updates...");
+
+                    for (DataSnapshot updateSnapshot : dataSnapshot.getChildren()) {
+                        String appName = updateSnapshot.child("appName").getValue(String.class);
+                        String updateDescription = updateSnapshot.child("updateDescription").getValue(String.class);
+                        String versionNumberStr = updateSnapshot.child("versionNumber").getValue(String.class);
+                        String versionCodeStr = updateSnapshot.child("versionCode").getValue(String.class);
+                        final String updateLink = updateSnapshot.child("updateLink").getValue(String.class);
+
+                        // Default handling if version data is null or empty
+                        if (versionNumberStr == null || versionNumberStr.trim().isEmpty()) {
+                            versionNumberStr = "0";
+                        }
+                        if (versionCodeStr == null || versionCodeStr.trim().isEmpty()) {
+                            versionCodeStr = "0";
+                        }
+
+                        Boolean isMandatoryValue = updateSnapshot.child("isMandatory").getValue(Boolean.class);
+                        boolean isMandatory = (isMandatoryValue != null) ? isMandatoryValue : false;
+
+                        Boolean isTemporaryMandatoryValue = updateSnapshot.child("isTemporaryMandatory").getValue(Boolean.class);
+                        boolean isTemporaryMandatory = (isTemporaryMandatoryValue != null) ? isTemporaryMandatoryValue : false;
+
+                        String mandatoryDate = updateSnapshot.child("mandatoryDate").getValue(String.class);
+                        String mandatoryTime = updateSnapshot.child("mandatoryTime").getValue(String.class);
+
+                        double versionNumber = Double.parseDouble(versionNumberStr);
+                        int versionCode = Integer.parseInt(versionCodeStr);
+
+                        Log.d("UpdateCheck", "Version Code: " + versionCode + ", Current Version Code: " + CURRENT_VERSION_CODE);
+                        Log.d("UpdateCheck", "Version Number: " + versionNumber + ", Current Version Name: " + CURRENT_VERSION_NAME);
+
+                        // Check if the current version is outdated
+                        if ((versionCode > CURRENT_VERSION_CODE || 
+                            (versionCode == CURRENT_VERSION_CODE && versionNumber > Double.parseDouble(CURRENT_VERSION_NAME)))) {
+                            Log.d("UpdateCheck", "New update available!");
+
+                            String updateMessage = "Version: " + versionCodeStr + ", " + versionNumberStr + "\n" +
+                                    "Description: " + updateDescription + "\n" +
+                                    "Download Link: " + updateLink;
+
+                            if (isTemporaryMandatory && mandatoryDate != null && mandatoryTime != null) {
+                                updateMessage += "\nالمهلة: " + mandatoryDate + " " + mandatoryTime;
+                            }
+
+                            AlertDialog.Builder builder = new AlertDialog.Builder(MainActivity.this)
+                                    .setTitle("New Update Available!")
+                                    .setMessage(updateMessage)
+                                    .setPositiveButton("Download", new DialogInterface.OnClickListener() {
+                                        @Override
+                                        public void onClick(DialogInterface dialog, int which) {
+                                            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(updateLink));
+                                            startActivity(intent);
+                                        }
+                                    });
+
+                            // If the update is mandatory or temporary mandatory and the time has passed, do not show the "Later" button
+                            if (isMandatory || (isTemporaryMandatory && isTimeForMandatoryUpdate(mandatoryDate, mandatoryTime))) {
+                                builder.setCancelable(false);
+                            } else {
+                                builder.setNegativeButton("Later", null);
+                            }
+
+                            AlertDialog dialog = builder.create();
+                            dialog.setCancelable(false);
+                            dialog.setCanceledOnTouchOutside(false);
+                            dialog.show();
+                        } else {
+                            Log.d("UpdateCheck", "No update required, current version is up-to-date.");
+                        }
+                    }
+                } else {
+                    Log.d("UpdateCheck", "No update information available in the database.");
+                    Toast.makeText(MainActivity.this, "No update information available", Toast.LENGTH_SHORT).show();
+                }
+            }
+
+            @Override
+            public void onCancelled(@NonNull DatabaseError databaseError) {
+                Log.d("UpdateCheck", "Error fetching update information: " + databaseError.getMessage());
+                Toast.makeText(MainActivity.this, "Error fetching update information", Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    private boolean isTimeForMandatoryUpdate(String date, String time) {
+        Calendar currentCalendar = Calendar.getInstance();
+        Calendar mandatoryCalendar = Calendar.getInstance();
+
+        String[] dateParts = date.split("/");
+        String[] timeParts = time.split(":");
+
+        int year = Integer.parseInt(dateParts[0]);
+        int month = Integer.parseInt(dateParts[1]) - 1; // الأشهر تبدأ من 0
+        int day = Integer.parseInt(dateParts[2]);
+        int hour = Integer.parseInt(timeParts[0]);
+        int minute = Integer.parseInt(timeParts[1]);
+
+        mandatoryCalendar.set(year, month, day, hour, minute);
+
+        return currentCalendar.after(mandatoryCalendar);
+    }
+
+    private void copyToClipboard(String text) {
+        android.content.ClipboardManager clipboard = (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        android.content.ClipData clip = android.content.ClipData.newPlainText("User ID", text);
+        clipboard.setPrimaryClip(clip);
+        Toast.makeText(this, "User ID copied to clipboard", Toast.LENGTH_SHORT).show();
+    }
+
+    private void markUserPassedThroughMainActivity() {
+        SharedPreferences.Editor editor = sharedPreferences.edit();
+        editor.putBoolean("passedThroughMainActivity", true);
+        editor.apply();
+    }
+
+    private void clearUserPassedThroughMainActivity() {
+        SharedPreferences.Editor editor = sharedPreferences.edit();
+        editor.remove("passedThroughMainActivity");
+        editor.apply();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        // Remove the listener to avoid memory leaks
+        if (banListener != null) {
+            dbRef.child(androidId).removeEventListener(banListener);
+        }
+        // Clear the user passed through MainActivity flag
+        clearUserPassedThroughMainActivity();
+    }
+}
+
+
+
+package com.my.newproject7;
+
+import android.content.Intent;
+import android.os.Bundle;
+import android.provider.Settings;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AppCompatActivity;
+
+import com.google.firebase.database.DataSnapshot;
+import com.google.firebase.database.DatabaseError;
+import com.google.firebase.database.DatabaseReference;
+import com.google.firebase.database.FirebaseDatabase;
+import com.google.firebase.database.ValueEventListener;
+
+import android.content.SharedPreferences;
+
+public class WelcomeActivity extends AppCompatActivity {
+
+    private TextView welcomeTextView;
+    private DatabaseReference dbRef;
+    private String androidId;
+    private ValueEventListener banListener;
+    private SharedPreferences sharedPreferences;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_welcome);
+
+        welcomeTextView = findViewById(R.id.welcomeTextView);
+        welcomeTextView.setText("Welcome to the app!");
+
+        // Initialize Firebase reference and Android ID
+        dbRef = FirebaseDatabase.getInstance().getReference("banned_users");
+        androidId = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
+
+        // Initialize SharedPreferences
+        sharedPreferences = getSharedPreferences("AppPreferences", MODE_PRIVATE);
+
+        // Check if the user passed through MainActivity
+        if (!hasUserPassedThroughMainActivity()) {
+            // User didn't go through MainActivity, ban for 24 hours
+            banUserFor24Hours();
+            return;
+        }
+
+        // Add real-time listener to check for ban status
+        addBanListener();
+    }
+
+    private void addBanListener() {
+        // Listener to monitor changes in the ban status
+        banListener = dbRef.child(androidId).addValueEventListener(new ValueEventListener() {
+            @Override
+            public void onDataChange(@NonNull DataSnapshot dataSnapshot) {
+                if (dataSnapshot.exists()) {
+                    // Check if the user has banEndTime field
+                    Long banEndTime = dataSnapshot.child("banEndTime").getValue(Long.class);
+
+                    if (banEndTime != null) {
+                        // If banEndTime exists, user is banned, redirect to BannedActivity
+                        long currentTime = System.currentTimeMillis();
+                        if (banEndTime > currentTime) {
+                            Intent intent = new Intent(WelcomeActivity.this, BannedActivity.class);
+                            startActivity(intent);
+                            finish();
+                        }
+                    } else {
+                        // If no banEndTime field, show an error or handle accordingly
+                        Toast.makeText(WelcomeActivity.this, "Ban end time not set", Toast.LENGTH_SHORT).show();
+                    }
+                }
+            }
+
+            @Override
+            public void onCancelled(@NonNull DatabaseError databaseError) {
+                Toast.makeText(WelcomeActivity.this, "Error monitoring ban status", Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    private boolean hasUserPassedThroughMainActivity() {
+        return sharedPreferences.getBoolean("passedThroughMainActivity", false);
+    }
+
+    private void banUserFor24Hours() {
+        long banEndTime = System.currentTimeMillis() + 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+        dbRef.child(androidId).child("banEndTime").setValue(banEndTime);
+        dbRef.child(androidId).child("message").setValue("تم حظرك لمدة يوم لأنك قمت بمحاولة تكريك لتطبيق وهذا يعتبر غير قانوني");
+        Toast.makeText(this, "تم حظرك لمدة 24 ساعة بسبب محاولتك لتجاوز MainActivity", Toast.LENGTH_SHORT).show();
+        
+        // Send the user to the banned activity
+        Intent intent = new Intent(WelcomeActivity.this, BannedActivity.class);
+        startActivity(intent);
+        finish();
+    }
+
+    private void clearUserFromSharedPreferences() {
+        SharedPreferences.Editor editor = sharedPreferences.edit();
+        editor.clear();
+        editor.apply();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        // Remove the listener to avoid memory leaks
+        if (banListener != null) {
+            dbRef.child(androidId).removeEventListener(banListener);
+        }
+        // Clear the user from SharedPreferences
+        clearUserFromSharedPreferences();
+    }
+}
+
+
+
+
+package com.my.newproject7;
+
+import android.content.Intent;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.CountDownTimer;
+import android.provider.Settings;
+import android.view.View;
+import android.widget.Button;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import androidx.appcompat.app.AppCompatActivity;
+
+import com.google.firebase.database.DataSnapshot;
+import com.google.firebase.database.DatabaseError;
+import com.google.firebase.database.DatabaseReference;
+import com.google.firebase.database.FirebaseDatabase;
+import com.google.firebase.database.ValueEventListener;
+
+public class BannedActivity extends AppCompatActivity {
+
+    private TextView bannedTextView, banTimeLeftTextView;
+    private Button contactSupportButton;
+    private DatabaseReference dbRef;
+    private String androidId;
+    private CountDownTimer countDownTimer;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_banned);
+
+        bannedTextView = findViewById(R.id.bannedTextView);
+        banTimeLeftTextView = findViewById(R.id.banTimeLeftTextView);
+        contactSupportButton = findViewById(R.id.contactSupportButton);
+
+        dbRef = FirebaseDatabase.getInstance().getReference("banned_users");
+        androidId = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
+
+        // Retrieve the ban information from Firebase
+        dbRef.child(androidId).addListenerForSingleValueEvent(new ValueEventListener() {
+            @Override
+            public void onDataChange(DataSnapshot dataSnapshot) {
+                if (dataSnapshot.exists()) {
+                    String banMessage = dataSnapshot.child("message").getValue(String.class);
+                    Long banEndTime = dataSnapshot.child("banEndTime").getValue(Long.class);
+
+                    bannedTextView.setText("You are banned from using this app.\nMessage: " + banMessage);
+
+                    if (banEndTime != null) {
+                        long currentTime = System.currentTimeMillis();
+
+                        if (currentTime >= banEndTime) {
+                            // If the ban has expired
+                            dbRef.child(androidId).removeValue();
+                            Toast.makeText(BannedActivity.this, "Your ban has expired. You can now access the app.", Toast.LENGTH_SHORT).show();
+                            finish(); // Close the banned activity and allow the user to access the app
+                        } else {
+                            // Start countdown if the ban is still active
+                            startCountDownTimer(banEndTime);
+                        }
+                    } else {
+                        Toast.makeText(BannedActivity.this, "Ban information is incomplete.", Toast.LENGTH_SHORT).show();
+                    }
+                } else {
+                    Toast.makeText(BannedActivity.this, "No ban found for this user.", Toast.LENGTH_SHORT).show();
+                    finish(); // Close the activity if no ban found
+                }
+            }
+
+            @Override
+            public void onCancelled(DatabaseError databaseError) {
+                Toast.makeText(BannedActivity.this, "Error retrieving ban information: " + databaseError.getMessage(), Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        // Set up the contact support button
+        contactSupportButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Intent telegramIntent = new Intent(Intent.ACTION_VIEW);
+                telegramIntent.setData(Uri.parse("https://t.me/HNR55"));
+                startActivity(telegramIntent);
+            }
+        });
+    }
+
+    // Method to start the countdown timer
+    private void startCountDownTimer(long banEndTime) {
+        long remainingTime = banEndTime - System.currentTimeMillis();
+
+        if (remainingTime > 0) {
+            countDownTimer = new CountDownTimer(remainingTime, 1000) {
+                @Override
+                public void onTick(long millisUntilFinished) {
+                    String timeLeftText = formatTime(millisUntilFinished);
+                    banTimeLeftTextView.setText("Time remaining: " + timeLeftText);
+                }
+
+                @Override
+                public void onFinish() {
+                    // When the countdown finishes, update the UI and remove the ban
+                    banTimeLeftTextView.setText("Your ban has expired.");
+                    dbRef.child(androidId).removeValue(); // Remove ban from Firebase
+                    Toast.makeText(BannedActivity.this, "Your ban has expired. You can now access the app.", Toast.LENGTH_SHORT).show();
+                    finish(); // Close the banned activity and allow the user to access the app
+                }
+            }.start();
+        } else {
+            // If no remaining time, handle expiry immediately
+            banTimeLeftTextView.setText("Your ban has expired.");
+            dbRef.child(androidId).removeValue(); // Remove ban from Firebase
+            Toast.makeText(BannedActivity.this, "Your ban has expired. You can now access the app.", Toast.LENGTH_SHORT).show();
+            finish(); // Close the banned activity
+        }
+    }
+
+    // Method to format the remaining time
+    private String formatTime(long millis) {
+        int seconds = (int) (millis / 1000) % 60;
+        int minutes = (int) ((millis / (1000 * 60)) % 60);
+        int hours = (int) ((millis / (1000 * 60 * 60)) % 24);
+        int days = (int) ((millis / (1000 * 60 * 60 * 24)) % 30);
+        int months = (int) ((millis / (1000L * 60 * 60 * 24 * 30)) % 12);
+        int years = (int) (millis / (1000L * 60 * 60 * 24 * 365));
+
+        return String.format("%d years %d months %d days %02d:%02d:%02d", years, months, days, hours, minutes, seconds);
+    }
+
+    @Override
+    public void onBackPressed() {
+        // Prevent going back and close the app completely
+        finish(); // Instead of killing the process, just finish the activity
+    }
+}
+
+
+
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="20dp">
+
+    <!-- EditText for entering username -->
+    <EditText
+        android:id="@+id/usernameEditText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Username"
+        android:textSize="16sp"
+        android:layout_alignParentTop="true"
+        android:layout_marginTop="50dp"
+        android:padding="10dp"
+        android:background="@drawable/edit_text_background"/>
+
+    <!-- Login Button -->
+    <Button
+        android:id="@+id/loginButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Login"
+        android:layout_below="@id/usernameEditText"
+        android:layout_marginTop="20dp"
+        android:layout_centerHorizontal="true"
+        android:padding="12dp"
+        android:background="@drawable/button_background"/>
+
+    <!-- User ID TextView with clickable functionality -->
+    <TextView
+        android:id="@+id/userIdTextView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="User ID: "
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:textColor="#000000"
+        android:layout_below="@id/loginButton"
+        android:layout_marginTop="40dp"
+        android:layout_centerHorizontal="true"
+        android:clickable="true"
+        android:focusable="true"/>
+
+    <!-- Label for User ID -->
+    <TextView
+        android:id="@+id/userIdLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="هذا معرفك الخاص"
+        android:textSize="14sp"
+        android:textColor="#7B7B7B"
+        android:layout_toEndOf="@id/userIdTextView"
+        android:layout_alignBaseline="@id/userIdTextView"
+        android:layout_marginStart="8dp"
+        android:layout_marginTop="5dp" />
+
+</RelativeLayout>
+
+
+
+
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="16dp">
+
+    <TextView
+        android:id="@+id/welcomeTextView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Welcome!"
+        android:textSize="24sp"
+        android:layout_centerInParent="true" />
+</RelativeLayout>
+
+
+
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="16dp">
+
+    <TextView
+        android:id="@+id/bannedTextView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="You are banned!"
+        android:textSize="24sp"
+        android:layout_centerInParent="true"/>
+
+    <Button
+        android:id="@+id/contactSupportButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Contact Support"
+        android:layout_below="@id/bannedTextView"
+        android:layout_marginTop="16dp"
+        android:layout_centerHorizontal="true" />
+
+    <!-- TextView لعرض الوقت المتبقي للحظر -->
+    <TextView
+        android:id="@+id/banTimeLeftTextView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Time remaining: 00:00:00"
+        android:textSize="18sp"
+        android:layout_below="@id/contactSupportButton"
+        android:layout_marginTop="16dp"
+        android:layout_centerHorizontal="true" />
+</RelativeLayout>
